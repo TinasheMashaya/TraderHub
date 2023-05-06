@@ -1,3 +1,4 @@
+# pyinstaller --onefile --windowed your_app_name.py
 import datetime
 import sys
 import random
@@ -29,7 +30,6 @@ def update_price(currency, currency_labels, currency_ticks, stop_event, lot_size
     time_tick = 0
     previous_price = None
     check_price_change = False
-
     while not stop_event.is_set():
         # get the current tick and time
         current_tick = mt5.symbol_info_tick(currency).time
@@ -48,21 +48,23 @@ def update_price(currency, currency_labels, currency_ticks, stop_event, lot_size
             lot = float(selected_lot)
         if check_price_change:
 
-            if current_price < previous_price and "Boom" in currency:
+            if current_price < previous_price and "Boom" in currency and time_tick ==3:
                 print("Price changed")
                 trade_type = "SELL"
                 thread = threading.Thread(target=open_trade, args=(trade_type, currency, lot))
                 # running_trades.append(thread)
                 thread.start()
+                check_price_change = False
 
-            elif (current_price > previous_price and "Crash" in currency):
+            elif (current_price > previous_price and "Crash" in currency) and time_tick ==4:
                 print("Price changed")
                 trade_type = "BUY"
                 thread = threading.Thread(target=open_trade, args=(trade_type, currency, lot))
                 # running_trades.append(thread)
                 thread.start()
+                check_price_change = False
+        if time_tick>3:
             check_price_change = False
-
         # check if a new minute has started
         if previous_price is not None:
             if current_time != previous_time and current_tick != previous_tick:
@@ -81,12 +83,14 @@ def update_price(currency, currency_labels, currency_ticks, stop_event, lot_size
                 print("New tick:", dt_string)
                 previous_time = current_time
                 check_price_change = True
+                time_tick = 0
 
         previous_price = current_price
         if len(currency_ticks[current_currency_index]) > 100:
             del currency_ticks[current_currency_index][0]
 
         # Wait for 1 second before updating again
+        time_tick = time_tick+1
         time.sleep(1)
 
 
