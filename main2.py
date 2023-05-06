@@ -1,8 +1,8 @@
+import datetime
 import sys
 import random
 import threading
 import time
-from datetime import datetime
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -18,17 +18,19 @@ mt5 = MetaTrader5(
     # port = 18812       (default)
 )
 
-
 # Function to update the price of a currency
 running_trades = []
-def update_price(currency, currency_labels, currency_ticks):
+
+
+def update_price(currency, currency_labels, currency_ticks, stop_event, lot_size,selected_lot):
     # initialize the time and tick variables
     previous_time = datetime.datetime.now().minute
     previous_tick = mt5.symbol_info_tick(currency).time
     time_tick = 0
     previous_price = None
     check_price_change = False
-    while True:
+
+    while not stop_event.is_set():
         # get the current tick and time
         current_tick = mt5.symbol_info_tick(currency).time
         current_time = datetime.datetime.now().minute
@@ -38,36 +40,70 @@ def update_price(currency, currency_labels, currency_ticks):
         tick = mt5.symbol_info_tick(currency)
         current_currency_index = currency_labels.index(currency)
         currency_ticks[current_currency_index].append(tick.bid)
-        print(currency_ticks)
-
+        # print(currency_ticks)
+        lot = 0.0
+        if lot_size[current_currency_index] > 0:
+            lot = float(lot_size[current_currency_index])
+        else:
+            lot = float(selected_lot)
         if check_price_change:
+
             if current_price < previous_price and "Boom" in currency:
                 print("Price changed")
                 trade_type = "SELL"
-                thread = threading.Thread(target=open_trade, args=(trade_type,currency))
-                running_trades.append(thread)
+                thread = threading.Thread(target=open_trade, args=(trade_type, currency, lot))
+                # running_trades.append(thread)
                 thread.start()
 
-            else
-
+            elif (current_price > previous_price and "Crash" in currency):
+                print("Price changed")
+                trade_type = "BUY"
+                thread = threading.Thread(target=open_trade, args=(trade_type, currency, lot))
+                # running_trades.append(thread)
+                thread.start()
             check_price_change = False
 
+        # check if a new minute has started
+        if previous_price is not None:
+            if current_time != previous_time and current_tick != previous_tick:
+                # List all the running threads
+                for thread in threading.enumerate():
+                    print(thread.name)
+                # convert the epoch to datetime
+                dt_object = datetime.datetime.fromtimestamp(current_tick)
+
+                # print the datetime object
+                print("Datetime object:", dt_object)
+
+                # format the datetime object as a string
+                dt_string = dt_object.strftime("%Y-%m-%d %H:%M:%S")
+                print("New minute started")
+                print("New tick:", dt_string)
+                previous_time = current_time
+                check_price_change = True
+
+        previous_price = current_price
         if len(currency_ticks[current_currency_index]) > 100:
             del currency_ticks[current_currency_index][0]
 
         # Wait for 1 second before updating again
         time.sleep(1)
 
-def open_trade(trade_type,currency):
-    # initialize the time and tick variables
-    previous_time = datetime.datetime.now().minute
-    previous_tick = mt5.symbol_info_tick(currency).time
+
+def open_trade(trade_type, currency, lot_size):
+    order_type = mt5.ORDER_TYPE_BUY
+    if (trade_type == "BUY"):
+        order_type = mt5.ORDER_TYPE_BUY
+        price = mt5.symbol_info_tick(currency).ask
+    elif (trade_type == "SELL"):
+        order_type = mt5.ORDER_TYPE_SELL
+        price = mt5.symbol_info_tick(currency).bid
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": currency,
-        "volume": 3.0,
-        "type": mt5.ORDER_TYPE_SELL,
-        "price": mt5.symbol_info_tick(currency).bid,
+        "volume": lot_size,
+        "type": order_type,
+        "price": price,
         "magic": 234000,
         "comment": "python script open",
         "type_time": mt5.ORDER_TIME_GTC,
@@ -76,7 +112,32 @@ def open_trade(trade_type,currency):
 
     # send a trading request
     result = mt5.order_send(request)
-    print(result)
+    # print(result)
+    time.sleep(30)
+
+    if trade_type == "BUY":
+        order_type = mt5.ORDER_TYPE_SELL
+        price = mt5.symbol_info_tick(currency).bid
+    elif trade_type == "SELL":
+        order_type = mt5.ORDER_TYPE_BUY
+        price = mt5.symbol_info_tick(currency).ask
+
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": currency,
+        "volume": lot_size,
+        "type": order_type,
+        "position": result.order,
+        "price": price,
+
+        "magic": 234000,
+        "comment": "python script close",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_FOK,
+    }
+    # send a trading request
+    result = mt5.order_send(request)
+    # print(result)
 
 
 class MainWindow(QWidget):
@@ -94,11 +155,16 @@ class MainWindow(QWidget):
         self.get_currencies()
         self.currency_ticks = []
         self.running_label = "Not Running"
-
+        self.active_currecies = []
+        self.lot_size = []
 
         for currency in self.currency_labels:
             self.currency_ticks.append([])
             self.running_labels.append('Not Running')
+            # Create an event and a thread for each currency
+            stop_event = threading.Event()
+            self.stop_events.append(stop_event)
+            self.lot_size.append(0.0)
 
         # Set the background color and gradient
         pal = QPalette()
@@ -140,7 +206,9 @@ class MainWindow(QWidget):
         lot_size_label = QLabel('Lot Size:')
         lot_size_label.setStyleSheet('color: white; font-size: 16px;')
         self.lot_size_selector = QComboBox()
-        self.lot_size_selector.addItems(['0.01', '0.02', '0.05', '0.1', '0.2', '0.5', '1.0', '2.0', '5.0', '10.0'])
+        self.lot_size_selector.addItems(['3.0', '3.5', '4.0', '4.5', '5.0', '6.0', '6.5', '7.0', '7.5', '8.0'])
+        # Connect the currency selector to its update function
+        self.lot_size_selector.currentIndexChanged.connect(self.update_lot)
         self.lot_size_selector.setStyleSheet(
             'font-size: 16px; color: white; background-color: #2c3e50; border-radius: 5px; padding: 5px;')
         self.lot_size_selector.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -214,7 +282,7 @@ class MainWindow(QWidget):
         self.show()
 
         # Connect the stop and initialize chart buttons to their respective functions
-        self.stop_chart_button.clicked.connect(self.stop_chart)
+        self.stop_chart_button.clicked.connect(self.stop_thread)
         self.init_chart_button.clicked.connect(self.start_thread)
 
         # Update the chart every second
@@ -229,6 +297,10 @@ class MainWindow(QWidget):
         # Connect the currency selector to its update function
         self.currency_selector.currentIndexChanged.connect(self.update_chart)
 
+    def update_lot(self):
+        new_lot = float(self.lot_size_selector.currentText())
+        current_index = self.currency_labels.index(self.currency_selector.currentText())
+        self.lot_size[current_index] = new_lot
     def stop_chart(self):
         """
         Stops the chart from updating.
@@ -276,7 +348,8 @@ class MainWindow(QWidget):
         """
         color = 'red'
         current_currency_index = self.currency_labels.index(self.currency_selector.currentText())
-        if(self.running_labels[current_currency_index] == "Running"):
+        self.lot_size_selector.setCurrentText(str(self.lot_size[current_currency_index]))
+        if self.running_labels[current_currency_index] == "Running":
             color = "green"
 
         if self.chart_running:
@@ -286,7 +359,8 @@ class MainWindow(QWidget):
             # self.ax.set_ylim([min(self.currency_ticks[current_currency_index]), max(self.currency_ticks[current_currency_index])])
             self.ax.set_xlabel('Time')
             self.ax.set_ylabel('Price')
-            self.ax.set_title(f"{self.currency_selector.currentText()} is {self.running_labels[current_currency_index]}",color=color)
+            self.ax.set_title(
+                f"{self.currency_selector.currentText()} is {self.running_labels[current_currency_index]}", color=color)
 
             # Add a text annotation for the currency label
             currency_label = self.currency_selector.currentText()
@@ -295,38 +369,88 @@ class MainWindow(QWidget):
 
             self.canvas.draw()
 
+    def stop_thread(self):
+        # Stop the thread corresponding to the selected currency
+        current_index = self.currency_labels.index(self.currency_selector.currentText())
+        if self.currency_selector.currentText() in self.threads and self.threads[
+            self.currency_selector.currentText()].is_alive():
+            # The thread exists and is running; stop it
+            self.stop_events[current_index].set()
+            # self.running_labels[current_index].setText('Not Running')
+            self.running_labels[current_index] = "Not Running"
+            item_text = self.currency_selector.currentText()
+            for i in range(self.trade_list.count()):
+                item = self.trade_list.item(i)
+                if item.text() == item_text:
+                    self.trade_list.takeItem(i)
+                    break
+            # remove_deleted = self.active_currecies.index(self.currency_selector.currentText())
+            # self.active_currecies.pop(remove_deleted)
+            # for active_currency in self.active_currecies:
+            #     trade_info = f'{active_currency} is Running'
+            #     item = QListWidgetItem(trade_info)
+            #     item.setForeground(QColor(46, 204, 113))
+            #     self.trade_list.addItem(item)
+        else:
+            # The thread doesn't exist or isn't running; do nothing
+            pass
 
     def start_thread(self):
+        # self.timer.start()
+        # self.chart_running = True
         currency = self.currency_selector.currentText()
+        current_currency_index = self.currency_labels.index(currency)
         # Start the thread corresponding to the selected currency
         if currency in self.threads and not self.threads[currency].is_alive():
             # The thread exists but is not running; start it
             stop_event = threading.Event()
-            # self.stop_events[currencies.index(currency)] = stop_event
-            # t = threading.Thread(target=update_price, args=(currency, self.thread_outputs[currencies.index(currency)], stop_event), name=currency)
-            # self.threads[currency] = t
-            # t.start()
+            self.stop_events[current_currency_index] = stop_event
+            t = threading.Thread(target=update_price,
+                                 args=(currency, self.currency_labels, self.currency_ticks, stop_event,self.lot_size ,self.lot_size_selector.currentText()),
+                                 name=currency)
+            self.threads[currency] = t
+            t.start()
+            self.running_labels[current_currency_index] = "Running"
+
+            self.active_currecies.append(self.currency_selector.currentText())
+            trade_info = self.currency_selector.currentText()
+            item = QListWidgetItem(trade_info)
+            item.setForeground(QColor(46, 204, 113))
+            self.trade_list.addItem(item)
+
             # self.running_labels[currencies.index(currency)].setText('Running')
         elif currency in self.threads and self.threads[currency].is_alive():
             # The thread exists and is running; do nothing
             pass
         else:
             # The thread doesn't exist; create it and start it
-            current_currency_index = self.currency_labels.index(currency)
+
             # output = self.thread_outputs[currencies.index(currency)]
             stop_event = threading.Event()
-            # self.stop_events[currencies.index(currency)] = stop_event
-            t = threading.Thread(target=update_price, args=(currency, self.currency_labels, self.currency_ticks),
+            self.stop_events[current_currency_index] = stop_event
+            t = threading.Thread(target=update_price,
+                                 args=(currency, self.currency_labels, self.currency_ticks, stop_event,self.lot_size ,self.lot_size_selector.currentText()),
                                  name=currency)
             self.threads[currency] = t
             t.start()
             self.running_labels[current_currency_index] = "Running"
-            trade_info = f'{self.currency_selector.currentText()} is Running'
-
+            # trade_info = f'{self.currency_selector.currentText()} is Running'
+            #
+            # item = QListWidgetItem(trade_info)
+            # item.setForeground(QColor(46, 204, 113))
+            # self.trade_list.addItem(item)
+            # # self.running_labels[current_currency_index].setText('Running')
+            self.active_currecies.append(self.currency_selector.currentText())
+            # for active_currency in self.active_currecies:
+            #     trade_info = active_currency
+            #     item = QListWidgetItem(trade_info)
+            #     item.setForeground(QColor(46, 204, 113))
+            #     self.trade_list.addItem(item)
+            #     # self.running_labels[currencies.index(currency)].setText('Running')
+            trade_info = self.currency_selector.currentText()
             item = QListWidgetItem(trade_info)
             item.setForeground(QColor(46, 204, 113))
             self.trade_list.addItem(item)
-            # self.running_labels[current_currency_index].setText('Running')
 
 
 if __name__ == '__main__':
